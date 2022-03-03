@@ -11,6 +11,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/schollz/progressbar/v3"
 )
 
 func main() {
@@ -49,6 +50,8 @@ func main() {
 	for _, file := range files {
 		// Upload to data to blob storage
 		data, err := os.ReadFile(file)
+		total_size := int64(len(data))
+		fmt.Println(total_size)
 		if err != nil {
 			log.Fatalf("Failure to read file: %+v", err)
 		}
@@ -60,12 +63,19 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		bar := progressbar.Default(100)
 		fmt.Println("Starting upload file: " + fileName)
-		_, err = blobClient.UploadBufferToBlockBlob(ctx, data, azblob.HighLevelUploadToBlockBlobOption{})
+		_, err = blobClient.UploadBufferToBlockBlob(ctx, data, azblob.HighLevelUploadToBlockBlobOption{
+			Progress: func(bytesTransferred int64) {
+				percByteTransfered := bytesTransferred * 100
+				totalPerc := percByteTransfered / int64(total_size)
+				bar.Set(int(totalPerc))
+			}})
 		if err != nil {
 			log.Fatalf("Failure to upload to blob: %+v", err)
 		}
 		fmt.Println("Finished upload file: " + fileName)
+		bar.Reset()
 	}
 
 }
