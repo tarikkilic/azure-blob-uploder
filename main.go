@@ -3,10 +3,12 @@ package main
 import (
 	// "context"
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -16,17 +18,28 @@ import (
 
 func main() {
 	fmt.Printf("---Azure Blob Storage Uploader---\n")
-	url := "https://jasonwhiteupwork.blob.core.windows.net/"
+
 	ctx := context.Background()
 
+	containerName := flag.String("container", "", "Container name")
+	storageAccount := flag.String("account", "", "Storage account")
 	dirname, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatal(err)
 	}
-	dirname += "\\upload"
+	if runtime.GOOS == "windows" {
+		dirname += "\\upload"
+	} else {
+		dirname += "/upload"
+	}
+
+	yourDirectoryPath := flag.String("path", dirname, "Directory of files")
+	flag.Parse()
+	url := "https://" + *storageAccount + ".blob.core.windows.net/"
+
 	fmt.Printf("Get all files from directory...\n")
 	var files []string
-	err = filepath.Walk(dirname, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(*yourDirectoryPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			fmt.Println(err)
 			return err
@@ -51,14 +64,13 @@ func main() {
 		// Upload to data to blob storage
 		data, err := os.ReadFile(file)
 		total_size := int64(len(data))
-		fmt.Println(total_size)
 		if err != nil {
 			log.Fatalf("Failure to read file: %+v", err)
 		}
 		fileName := file[strings.LastIndex(file, "\\")+1:]
 		blobName := fileName
-		containerName := "jasonwhite"
-		blobUrl := url + containerName + "/" + blobName
+
+		blobUrl := url + *containerName + "/" + blobName
 		blobClient, err := azblob.NewBlockBlobClient(blobUrl, credential, nil)
 		if err != nil {
 			log.Fatal(err)
