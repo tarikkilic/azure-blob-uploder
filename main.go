@@ -4,8 +4,14 @@ import (
 	// "context"
 	"bufio"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/md5"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,10 +19,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/joho/godotenv"
 	"github.com/schollz/progressbar/v3"
+	"golang.org/x/term"
 )
 
 const MAX_SIZE int64 = 268435456000
@@ -60,6 +69,7 @@ func listAllFiles(files map[string]string) {
 }
 
 func askWhichFiles() []string {
+
 	reader := bufio.NewReader(os.Stdin)
 	text, _ := reader.ReadString('\n')
 	selectedFiles := strings.Split(text, " ")
@@ -85,8 +95,23 @@ func getSelectFilesAndCheck(selectedFiles []string, files map[string]string) []s
 	return selectedFilesArr
 }
 
-func setCredentials() *azidentity.ClientSecretCredential {
-	credential, err := azidentity.NewClientSecretCredential(os.Getenv("AZURE_TENANT_ID"), os.Getenv("AZURE_CLIENT_ID"), os.Getenv("AZURE_CLIENT_SECRET"), nil)
+func setCredentials(key string) *azidentity.ClientSecretCredential {
+	var myEnv map[string]string
+	myEnv, err := godotenv.Read("config.env")
+	if err != nil {
+		log.Fatalf("Failure to read config: %+v", err)
+		os.Exit(1)
+	}
+	tenantIdE := myEnv["tenantId"]
+	clientIdE := myEnv["clientId"]
+	clientSecretE := myEnv["clientSecret"]
+
+	tenantId := decrypt([]byte(tenantIdE), key)
+	clientId := decrypt([]byte(clientIdE), key)
+	clientSecret := decrypt([]byte(clientSecretE), key)
+
+	// credential, err := azidentity.NewClientSecretCredential(os.Getenv("AZURE_TENANT_ID"), os.Getenv("AZURE_CLIENT_ID"), os.Getenv("AZURE_CLIENT_SECRET"), nil)
+	credential, err := azidentity.NewClientSecretCredential(string(tenantId), string(clientId), string(clientSecret), nil)
 	if err != nil {
 		log.Fatal("Invalid credentials with error: " + err.Error())
 		os.Exit(1)
@@ -127,12 +152,112 @@ func uploadFiles(file string, containerUrl string, ctx context.Context, credenti
 	bar.Reset()
 }
 
+func createHash(key string) string {
+	hasher := md5.New()
+	hasher.Write([]byte(key))
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func encrypt(data []byte, passphrase string) []byte {
+	block, _ := aes.NewCipher([]byte(createHash(passphrase)))
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		panic(err.Error())
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		panic(err.Error())
+	}
+	ciphertext := gcm.Seal(nonce, nonce, data, nil)
+	return ciphertext
+}
+
+func decrypt(data []byte, passphrase string) []byte {
+	key := []byte(createHash(passphrase))
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		panic(err.Error())
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		panic(err.Error())
+	}
+	nonceSize := gcm.NonceSize()
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		panic(err.Error())
+	}
+	return plaintext
+}
+
 func main() {
 	fmt.Printf("---Azure Blob Storage Uploader---\n")
 	ctx := context.Background()
 
-	containerName := flag.String("container", "", "Container name")
-	storageAccount := flag.String("account", "", "Storage account")
+	if os.Args[1] == "encrypt" {
+		err := godotenv.Load("config.env")
+		if err != nil {
+			log.Fatal(err)
+			os.Exit(1)
+		}
+		fmt.Print("Enter tenant id: ")
+		tenantId, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			log.Fatal(err)
+			os.Exit(1)
+		}
+		fmt.Println()
+
+		fmt.Print("Enter client id: ")
+		clientId, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			log.Fatal(err)
+			os.Exit(1)
+		}
+		fmt.Println()
+
+		fmt.Print("Enter secret id: ")
+		clientSecret, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			log.Fatal(err)
+			os.Exit(1)
+		}
+		fmt.Println()
+
+		fmt.Print("Enter your key: ")
+		key, err := term.ReadPassword(int(syscall.Stdin))
+
+		if err != nil {
+			log.Fatal(err)
+			os.Exit(1)
+		}
+
+		fmt.Println()
+		defer os.Stdin.Close()
+		cipherTenantId := encrypt(tenantId, string(key))
+		cipherClientId := encrypt(clientId, string(key))
+		cipherClientSecret := encrypt(clientSecret, string(key))
+
+		myMap := make(map[string]string)
+		myMap["tenantId"] = string(cipherTenantId)
+		myMap["clientId"] = string(cipherClientId)
+		myMap["clientSecret"] = string(cipherClientSecret)
+		err = godotenv.Write(myMap, "config.env")
+		if err != nil {
+			log.Fatal(err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// tenantID := encryptCmd.String("tenant_id", "", "AZURE_TENANT_ID")
+	// clientID := encryptCmd.String("tenant_id", "", "AZURE_TENANT_ID")
+	// clientSecret := encryptCmd.String("tenant_id", "", "AZURE_TENANT_ID")
+	uploadCmd := flag.NewFlagSet("upload", flag.ExitOnError)
+
+	containerName := uploadCmd.String("container", "", "Container name")
+	storageAccount := uploadCmd.String("account", "", "Storage account")
 	dirname, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatal(err)
@@ -143,12 +268,21 @@ func main() {
 	} else {
 		dirname += "/upload"
 	}
-	yourDirectoryPath := flag.String("path", dirname, "Directory of files")
-	flag.Parse()
+	yourDirectoryPath := uploadCmd.String("path", dirname, "Directory of files")
+	uploadCmd.Parse(os.Args[2:])
 
 	//set your blob azure url
 	url := "https://" + *storageAccount + ".blob.core.windows.net/"
 	containerUrl := url + *containerName
+
+	fmt.Print("Enter your key: ")
+	key, err := term.ReadPassword(int(syscall.Stdin))
+	if err != nil {
+		log.Fatal(err)
+		os.Exit(1)
+	}
+	fmt.Println()
+
 	fmt.Printf("Get all files from directory...\n")
 	files := getFilesFromDir(*yourDirectoryPath)
 
@@ -162,7 +296,7 @@ func main() {
 	selectedFilesArr := getSelectFilesAndCheck(selectedFiles, files)
 
 	//Set credentials
-	credential := setCredentials()
+	credential := setCredentials(string(key))
 
 	fmt.Println("-------------------------------")
 	fmt.Println("Starting upload all files...")
